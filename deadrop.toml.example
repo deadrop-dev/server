@@ -1,0 +1,34 @@
+# Deadrop self-host server configuration.
+# Every key is optional; the values below are the built-in defaults.
+# Environment variables (shown in comments) override the file.
+
+[server]
+host = "0.0.0.0"            # DEADROP_HOST
+port = 8080                 # DEADROP_PORT
+
+[storage]
+driver = "sqlite"           # DEADROP_STORAGE_DRIVER ("sqlite" | "memory")
+path = "./deadrop.db"       # DEADROP_STORAGE_PATH (sqlite only)
+
+[limits]
+max_expires_minutes = 10080     # DEADROP_MAX_EXPIRES_MINUTES (7 days; expiresMinutes is clamped, never rejected)
+default_expires_minutes = 60    # DEADROP_DEFAULT_EXPIRES_MINUTES (used when expiresMinutes is absent)
+create_per_minute = 10          # DEADROP_RATE_CREATE_PER_MINUTE (POST /api/secrets per client IP)
+retrieve_per_minute = 60        # DEADROP_RATE_RETRIEVE_PER_MINUTE (GET/DELETE/meta per client IP)
+max_body_bytes = 32768          # DEADROP_MAX_BODY_BYTES
+cleanup_interval_seconds = 60   # DEADROP_CLEANUP_INTERVAL_SECONDS (TTL sweep)
+
+[cors]
+allowed_origins = ["*"]     # DEADROP_CORS_ALLOWED_ORIGINS (comma-separated)
+
+# Only enable this when the server sits behind YOUR edge (Cloudflare, nginx,
+# Caddy, ...) and that edge injects the shared-secret header on every request.
+# Forwarded-IP headers (CF-Connecting-IP, X-Forwarded-For) are ignored unless
+# the request carries the correct proof — see SPEC v2.0 §5.
+[trusted_proxy]
+enabled = false                       # DEADROP_TRUSTED_PROXY_ENABLED
+shared_secret = ""                    # DEADROP_TRUSTED_PROXY_SHARED_SECRET (required when enabled)
+shared_secret_header = "X-Deadrop-Edge" # DEADROP_TRUSTED_PROXY_HEADER
+
+[metrics]
+enabled = false             # DEADROP_METRICS_ENABLED (or the -metrics flag)

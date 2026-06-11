@@ -1,0 +1,6 @@
+/deadrop-server
+/deadrop-server.exe
+*.db
+*.db-wal
+*.db-shm
+.worktrees/
