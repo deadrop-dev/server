@@ -10,13 +10,17 @@ import (
 // single mutex, which trivially satisfies SPEC §3 atomicity. Secrets do not
 // survive a restart — for quick trials only.
 type MemoryStore struct {
-	mu      sync.Mutex
-	secrets map[string]Secret
+	mu       sync.Mutex
+	secrets  map[string]Secret
+	requests map[string]Request
 }
 
 // NewMemory returns an empty in-memory store.
 func NewMemory() *MemoryStore {
-	return &MemoryStore{secrets: make(map[string]Secret)}
+	return &MemoryStore{
+		secrets:  make(map[string]Secret),
+		requests: make(map[string]Request),
+	}
 }
 
 func (m *MemoryStore) Create(_ context.Context, s Secret) error {
@@ -67,6 +71,67 @@ func (m *MemoryStore) Hint(_ context.Context, id string, now time.Time) (string,
 	return s.Hint, nil
 }
 
+func (m *MemoryStore) CreateRequest(_ context.Context, req Request) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.requests[req.ID]; exists {
+		return ErrDuplicateID
+	}
+	m.requests[req.ID] = req
+	return nil
+}
+
+func (m *MemoryStore) RequestStatus(_ context.Context, id string, now time.Time) (RequestStatus, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	req, ok := m.requests[id]
+	if !ok || !req.ExpiresAt.After(now) {
+		return RequestStatus{}, ErrNotFound
+	}
+	return RequestStatus{
+		PublicKey: req.PublicKey,
+		Prompt:    req.Prompt,
+		Fulfilled: req.Fulfilled,
+	}, nil
+}
+
+func (m *MemoryStore) FulfillRequest(_ context.Context, id string, resp RequestResponse, now time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	req, ok := m.requests[id]
+	if !ok || !req.ExpiresAt.After(now) {
+		return ErrNotFound
+	}
+	if req.Fulfilled {
+		return ErrAlreadyFulfilled // original response stays intact
+	}
+	req.Fulfilled = true
+	req.Response = resp
+	m.requests[id] = req // ExpiresAt untouched (§9.3 TTL inheritance)
+	return nil
+}
+
+func (m *MemoryStore) ClaimGate(_ context.Context, id string, now time.Time) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	req, ok := m.requests[id]
+	if !ok || !req.ExpiresAt.After(now) {
+		return "", false, ErrNotFound
+	}
+	return req.ClaimProof, req.Fulfilled, nil
+}
+
+func (m *MemoryStore) ClaimBurn(_ context.Context, id, claimProof string, now time.Time) (RequestResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	req, ok := m.requests[id]
+	if !ok || !req.ExpiresAt.After(now) || !req.Fulfilled || req.ClaimProof != claimProof {
+		return RequestResponse{}, ErrNotFound // mismatch: do NOT burn
+	}
+	delete(m.requests, id)
+	return req.Response, nil
+}
+
 func (m *MemoryStore) DeleteExpired(_ context.Context, now time.Time) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -74,6 +139,12 @@ func (m *MemoryStore) DeleteExpired(_ context.Context, now time.Time) (int64, er
 	for id, s := range m.secrets {
 		if !s.ExpiresAt.After(now) {
 			delete(m.secrets, id)
+			n++
+		}
+	}
+	for id, req := range m.requests {
+		if !req.ExpiresAt.After(now) {
+			delete(m.requests, id)
 			n++
 		}
 	}

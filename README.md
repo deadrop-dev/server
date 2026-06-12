@@ -55,14 +55,20 @@ The image is built `FROM scratch` (~10 MB); the SQLite database lives in the
 | `GET /api/secrets/{id}?k={keyHash}` | Verify the key hash (constant-time), then atomically burn and return `{encrypted, iv, hint}`. Wrong key → 403 without burning; gone → 404. |
 | `GET /api/secrets/{id}/meta` | `{hint}` without key proof (so recipients can see the password hint first). |
 | `DELETE /api/secrets/{id}?k={keyHash}` | Revoke with the same key-hash proof. 204 on success. |
+| `POST /api/requests` | Request a secret (SPEC §9): `{id, publicKey, claimProof, prompt?, expiresMinutes}`. Duplicate id → 409. |
+| `GET /api/requests/{id}` | Responder view: `{publicKey, prompt, fulfilled}`. Unknown or expired → 404. |
+| `POST /api/requests/{id}/response` | Attach the encrypted response `{encrypted, iv, wrappedKey, wrapIv, hkdfSalt, responderPublicKey}`. Exactly one per request — already fulfilled → 409. The response inherits the request's original expiry. |
+| `GET /api/requests/{id}/response?proof={claimProof}` | Claim the response: 404 unknown/expired/claimed → 403 wrong proof (no burn) → 202 `{"status":"pending"}` (no burn) → 200 blob with the whole record atomically burned. |
 | `GET /health` | `{"status":"ok"}` |
 | `GET /metrics` | Prometheus counters (opt-in: `-metrics` flag or `[metrics] enabled = true`). |
 
 `expiresMinutes` is clamped server-side to `[1, max_expires_minutes]`
-(default max 7 days) — never rejected for being out of range.
+(default max 7 days) — never rejected for being out of range. For requests
+the range `[1, 10080]` and the 1440 default are SPEC §9.2 normative.
 
-Rate limits (SPEC §7): creation ≤ 10/min/IP, retrieval-class (GET, meta,
-DELETE) ≤ 60/min/IP. Both configurable; 429 responses carry
+Rate limits (SPEC §7): creation ≤ 10/min/IP (`POST /api/secrets` and
+`POST /api/requests`), retrieval-class (GET, meta, DELETE, and the other
+request endpoints) ≤ 60/min/IP. Both configurable; 429 responses carry
 `X-RateLimit-Remaining` and `X-RateLimit-Reset`.
 
 ## Running behind a proxy

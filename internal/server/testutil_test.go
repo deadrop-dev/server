@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -72,7 +73,60 @@ const (
 	testKeyHash = "AdD6vSUfy74rk7S5J7Jq0q"           // 22 chars
 	testIV      = "AQAAAAAAAAAAAAAA"                 // 16 chars
 	testEnc     = "QtqZE8SUEmf64ZDnmdktoHRY_DO_1Vm8Iyk-aaA"
+
+	testClaimProof = "cLaImPrOoF0123456789ab" // 22 chars
+	testPrompt     = "the wifi password"
 )
+
+// Request-flow fixtures: structurally valid shapes (the server validates
+// encodings and sizes, never curve points), so zeroed bytes are fine.
+var (
+	testPublicKey  = base64.RawURLEncoding.EncodeToString(append([]byte{0x04}, make([]byte, 64)...))
+	testBadTagKey  = base64.RawURLEncoding.EncodeToString(append([]byte{0x05}, make([]byte, 64)...))
+	testWrappedKey = base64.RawURLEncoding.EncodeToString(make([]byte, 48))
+	testHkdfSalt   = base64.RawURLEncoding.EncodeToString(make([]byte, 16))
+)
+
+// requestBody returns a valid request-create payload, with overrides applied.
+func requestBody(overrides map[string]any) string {
+	m := map[string]any{
+		"id":             testID,
+		"publicKey":      testPublicKey,
+		"claimProof":     testClaimProof,
+		"prompt":         testPrompt,
+		"expiresMinutes": 60,
+	}
+	for k, v := range overrides {
+		if v == nil {
+			delete(m, k)
+		} else {
+			m[k] = v
+		}
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+// fulfillBody returns a valid request-fulfill payload, with overrides applied.
+func fulfillBody(overrides map[string]any) string {
+	m := map[string]any{
+		"encrypted":          testEnc,
+		"iv":                 testIV,
+		"wrappedKey":         testWrappedKey,
+		"wrapIv":             testIV,
+		"hkdfSalt":           testHkdfSalt,
+		"responderPublicKey": testPublicKey,
+	}
+	for k, v := range overrides {
+		if v == nil {
+			delete(m, k)
+		} else {
+			m[k] = v
+		}
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
+}
 
 // createBody returns a valid create payload, with overrides applied.
 func createBody(overrides map[string]any) string {

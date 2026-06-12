@@ -36,6 +36,22 @@ CREATE TABLE IF NOT EXISTS secrets (
 	expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_secrets_expires_at ON secrets(expires_at);
+CREATE TABLE IF NOT EXISTS requests (
+	id                   TEXT PRIMARY KEY,
+	public_key           TEXT NOT NULL,
+	claim_proof          TEXT NOT NULL,
+	prompt               TEXT NOT NULL DEFAULT '',
+	fulfilled            INTEGER NOT NULL DEFAULT 0,
+	encrypted            TEXT NOT NULL DEFAULT '',
+	iv                   TEXT NOT NULL DEFAULT '',
+	wrapped_key          TEXT NOT NULL DEFAULT '',
+	wrap_iv              TEXT NOT NULL DEFAULT '',
+	hkdf_salt            TEXT NOT NULL DEFAULT '',
+	responder_public_key TEXT NOT NULL DEFAULT '',
+	created_at           INTEGER NOT NULL,
+	expires_at           INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_requests_expires_at ON requests(expires_at);
 `
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
@@ -119,12 +135,132 @@ func (s *SQLiteStore) Hint(ctx context.Context, id string, now time.Time) (strin
 	return hint, nil
 }
 
-func (s *SQLiteStore) DeleteExpired(ctx context.Context, now time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM secrets WHERE expires_at <= ?`, now.Unix())
+func (s *SQLiteStore) CreateRequest(ctx context.Context, req Request) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO requests (id, public_key, claim_proof, prompt, created_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		req.ID, req.PublicKey, req.ClaimProof, req.Prompt,
+		req.CreatedAt.Unix(), req.ExpiresAt.Unix())
 	if err != nil {
-		return 0, fmt.Errorf("delete expired: %w", err)
+		var serr *sqlite.Error
+		if errors.As(err, &serr) {
+			code := serr.Code()
+			if code == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY || code == sqlite3.SQLITE_CONSTRAINT_UNIQUE {
+				return ErrDuplicateID
+			}
+		}
+		return fmt.Errorf("insert request: %w", err)
 	}
-	return res.RowsAffected()
+	return nil
+}
+
+func (s *SQLiteStore) RequestStatus(ctx context.Context, id string, now time.Time) (RequestStatus, error) {
+	var (
+		st        RequestStatus
+		fulfilled int
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT public_key, prompt, fulfilled FROM requests WHERE id = ? AND expires_at > ?`,
+		id, now.Unix()).Scan(&st.PublicKey, &st.Prompt, &fulfilled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RequestStatus{}, ErrNotFound
+	}
+	if err != nil {
+		return RequestStatus{}, fmt.Errorf("select request status: %w", err)
+	}
+	st.Fulfilled = fulfilled == 1
+	return st, nil
+}
+
+func (s *SQLiteStore) FulfillRequest(ctx context.Context, id string, resp RequestResponse, now time.Time) error {
+	// The fulfilled = 0 condition makes the flip atomic: only one fulfill can
+	// ever match a live row (SPEC §9.2). expires_at is deliberately not in
+	// the SET list — the response inherits the request's original expiry
+	// (§9.3).
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE requests
+		 SET encrypted = ?, iv = ?, wrapped_key = ?, wrap_iv = ?,
+		     hkdf_salt = ?, responder_public_key = ?, fulfilled = 1
+		 WHERE id = ? AND fulfilled = 0 AND expires_at > ?`,
+		resp.Encrypted, resp.IV, resp.WrappedKey, resp.WrapIV,
+		resp.HkdfSalt, resp.ResponderPublicKey, id, now.Unix())
+	if err != nil {
+		return fmt.Errorf("fulfill request: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("fulfill request: %w", err)
+	}
+	if n == 1 {
+		return nil
+	}
+	// No live unfulfilled row matched: a live row can only mean it is already
+	// fulfilled (the original response stays intact); otherwise it is gone.
+	var fulfilled int
+	err = s.db.QueryRowContext(ctx,
+		`SELECT fulfilled FROM requests WHERE id = ? AND expires_at > ?`,
+		id, now.Unix()).Scan(&fulfilled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("fulfill request: %w", err)
+	}
+	return ErrAlreadyFulfilled
+}
+
+func (s *SQLiteStore) ClaimGate(ctx context.Context, id string, now time.Time) (string, bool, error) {
+	var (
+		proof     string
+		fulfilled int
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT claim_proof, fulfilled FROM requests WHERE id = ? AND expires_at > ?`,
+		id, now.Unix()).Scan(&proof, &fulfilled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, ErrNotFound
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("select claim gate: %w", err)
+	}
+	return proof, fulfilled == 1, nil
+}
+
+func (s *SQLiteStore) ClaimBurn(ctx context.Context, id, claimProof string, now time.Time) (RequestResponse, error) {
+	// Atomic compare-and-delete per SPEC §9.3 (claim-burn): the whole record
+	// is gone in the same step that returns the blob, so two concurrent
+	// correct-proof claims resolve to exactly one success.
+	var resp RequestResponse
+	err := s.db.QueryRowContext(ctx,
+		`DELETE FROM requests
+		 WHERE id = ? AND claim_proof = ? AND fulfilled = 1 AND expires_at > ?
+		 RETURNING encrypted, iv, wrapped_key, wrap_iv, hkdf_salt, responder_public_key`,
+		id, claimProof, now.Unix()).
+		Scan(&resp.Encrypted, &resp.IV, &resp.WrappedKey, &resp.WrapIV,
+			&resp.HkdfSalt, &resp.ResponderPublicKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RequestResponse{}, ErrNotFound
+	}
+	if err != nil {
+		return RequestResponse{}, fmt.Errorf("claim burn: %w", err)
+	}
+	return resp, nil
+}
+
+func (s *SQLiteStore) DeleteExpired(ctx context.Context, now time.Time) (int64, error) {
+	var total int64
+	for _, table := range []string{"secrets", "requests"} {
+		res, err := s.db.ExecContext(ctx, `DELETE FROM `+table+` WHERE expires_at <= ?`, now.Unix())
+		if err != nil {
+			return total, fmt.Errorf("delete expired %s: %w", table, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, fmt.Errorf("delete expired %s: %w", table, err)
+		}
+		total += n
+	}
+	return total, nil
 }
 
 func (s *SQLiteStore) Close() error { return s.db.Close() }
