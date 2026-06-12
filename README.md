@@ -1,7 +1,9 @@
 # Deadrop Server
 
 Self-hostable server for [Deadrop](https://deadrop.dev) — zero-knowledge,
-burn-on-read secret sharing. Implements the Deadrop protocol **SPEC v2.0**:
+burn-on-read secret sharing. Implements the Deadrop protocol
+[**SPEC v2.1**](https://github.com/deadrop-dev/crypto/blob/master/SPEC.md),
+including the §9 request flow (Request-a-Secret):
 
 - The server stores only ciphertext, IV, a truncated key hash, an optional
   hint, and an expiry. It can never decrypt anything.
@@ -12,14 +14,35 @@ burn-on-read secret sharing. Implements the Deadrop protocol **SPEC v2.0**:
 
 One static binary, one SQLite file, zero external services.
 
+## Quickstart — Docker
+
+Multi-arch images (amd64 + arm64) are published to
+[GHCR](https://github.com/orgs/deadrop-dev/packages/container/package/server):
+
+```sh
+docker run -d --name deadrop \
+  -p 8080:8080 \
+  -v deadrop-data:/data \
+  ghcr.io/deadrop-dev/server:latest
+curl http://localhost:8080/health
+# {"status":"ok"}
+```
+
+The image is built `FROM scratch` (~10 MB); the SQLite database lives in the
+`/data` volume. Point any Deadrop client at it:
+
+```sh
+deadrop send -s http://localhost:8080 "my-api-key"
+```
+
+To build the image yourself instead: `docker build -t deadrop-server .`
+
 ## Quickstart — binary
 
 ```sh
 go build -o deadrop-server ./cmd/deadrop-server
 ./deadrop-server
 # {"level":"INFO","msg":"listening","addr":"0.0.0.0:8080","driver":"sqlite"}
-curl http://localhost:8080/health
-# {"status":"ok"}
 ```
 
 Configuration is optional. Use a TOML file, environment variables, or both
@@ -32,20 +55,6 @@ DEADROP_PORT=9090 DEADROP_STORAGE_PATH=/var/lib/deadrop/deadrop.db ./deadrop-ser
 
 See [`deadrop.toml.example`](deadrop.toml.example) for every knob and its
 environment override.
-
-## Quickstart — Docker
-
-```sh
-docker build -t deadrop-server .
-docker run -d --name deadrop \
-  -p 8080:8080 \
-  -v deadrop-data:/data \
-  deadrop-server
-curl http://localhost:8080/health
-```
-
-The image is built `FROM scratch` (~10 MB); the SQLite database lives in the
-`/data` volume.
 
 ## API
 
