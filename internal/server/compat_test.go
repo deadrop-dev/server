@@ -30,6 +30,19 @@ type vectorsFile struct {
 		Plaintext      string `json:"plaintext"`
 		CiphertextB64  string `json:"ciphertext_b64"`
 	} `json:"password_vectors"`
+	RequestVectors []struct {
+		Name                        string `json:"name"`
+		RequesterPublicKeyB64       string `json:"requester_public_key_b64"`
+		RequesterPrivateKeyPKCS8B64 string `json:"requester_private_key_pkcs8_b64"`
+		ResponderPublicKeyB64       string `json:"responder_public_key_b64"`
+		HkdfSaltB64                 string `json:"hkdf_salt_b64"`
+		WrapIVB64                   string `json:"wrap_iv_b64"`
+		WrappedKeyB64               string `json:"wrapped_key_b64"`
+		IVB64                       string `json:"iv_b64"`
+		CiphertextB64               string `json:"ciphertext_b64"`
+		ClaimProof                  string `json:"claim_proof"`
+		RequesterFingerprint        string `json:"requester_fingerprint"`
+	} `json:"request_vectors"`
 }
 
 func loadVectors(t *testing.T) vectorsFile {
@@ -141,6 +154,100 @@ func TestCryptoVectorRoundTrip(t *testing.T) {
 
 			// Burned.
 			resp, body = e.do(t, "GET", "/api/secrets/"+id+"?k="+c.keyHash, "", nil)
+			wantError(t, resp, body, 404)
+		})
+	}
+}
+
+// claimProofOf reimplements the SPEC §9.1 claim-proof derivation:
+// SHA-256(UTF-8 bytes of privateKeyB64) -> base64url -> first 22 chars.
+func claimProofOf(privateKeyB64 string) string {
+	sum := sha256.Sum256([]byte(privateKeyB64))
+	return base64.RawURLEncoding.EncodeToString(sum[:])[:22]
+}
+
+// fingerprintOf reimplements the SPEC §9.1 fingerprint:
+// first 8 chars of base64url(SHA-256(raw 65-byte public key)).
+func fingerprintOf(t *testing.T, publicKeyB64 string) string {
+	t.Helper()
+	raw, err := base64.RawURLEncoding.DecodeString(publicKeyB64)
+	if err != nil {
+		t.Fatalf("decode public key: %v", err)
+	}
+	sum := sha256.Sum256(raw)
+	return base64.RawURLEncoding.EncodeToString(sum[:])[:8]
+}
+
+// TestRequestVectorRoundTrip drives each @deadrop/crypto request-flow vector
+// through the full wire protocol: create with the vector's requester key and
+// claim proof, fulfill with its response fields, claim with its proof, and
+// assert every returned field is byte-identical. The server never touches the
+// ECDH/HKDF material — this validates wire + gate fidelity (SPEC §8, §9).
+func TestRequestVectorRoundTrip(t *testing.T) {
+	vf := loadVectors(t)
+	if len(vf.RequestVectors) == 0 {
+		t.Skip("test vectors file has no request_vectors section")
+	}
+	e := newTestEnv(t, nil)
+
+	for _, v := range vf.RequestVectors {
+		t.Run(v.Name, func(t *testing.T) {
+			// Our derivations must agree with the vector's.
+			if got := claimProofOf(v.RequesterPrivateKeyPKCS8B64); got != v.ClaimProof {
+				t.Fatalf("claim proof derivation mismatch: computed %q, vector says %q", got, v.ClaimProof)
+			}
+			if got := fingerprintOf(t, v.RequesterPublicKeyB64); got != v.RequesterFingerprint {
+				t.Fatalf("fingerprint derivation mismatch: computed %q, vector says %q", got, v.RequesterFingerprint)
+			}
+
+			id := randomID(t)
+			resp, _ := e.do(t, "POST", "/api/requests", requestBody(map[string]any{
+				"id":         id,
+				"publicKey":  v.RequesterPublicKeyB64,
+				"claimProof": v.ClaimProof,
+			}), nil)
+			wantStatus(t, resp, 201)
+
+			// The responder sees the requester public key byte-identical.
+			resp, body := e.do(t, "GET", "/api/requests/"+id, "", nil)
+			wantStatus(t, resp, 200)
+			if body["publicKey"] != v.RequesterPublicKeyB64 {
+				t.Errorf("publicKey round-trip mismatch:\n got %v\nwant %s", body["publicKey"], v.RequesterPublicKeyB64)
+			}
+
+			resp, _ = e.do(t, "POST", "/api/requests/"+id+"/response", fulfillBody(map[string]any{
+				"encrypted":          v.CiphertextB64,
+				"iv":                 v.IVB64,
+				"wrappedKey":         v.WrappedKeyB64,
+				"wrapIv":             v.WrapIVB64,
+				"hkdfSalt":           v.HkdfSaltB64,
+				"responderPublicKey": v.ResponderPublicKeyB64,
+			}), nil)
+			wantStatus(t, resp, 201)
+
+			// Wrong proof gates with 403 and does not burn.
+			resp, body = e.do(t, "GET", "/api/requests/"+id+"/response?proof=ZZZZZZZZZZZZZZZZZZZZZZ", "", nil)
+			wantError(t, resp, body, 403)
+
+			// Correct proof: byte-identical blob, atomically burned.
+			resp, body = e.do(t, "GET", "/api/requests/"+id+"/response?proof="+v.ClaimProof, "", nil)
+			wantStatus(t, resp, 200)
+			want := map[string]string{
+				"encrypted":          v.CiphertextB64,
+				"iv":                 v.IVB64,
+				"wrappedKey":         v.WrappedKeyB64,
+				"wrapIv":             v.WrapIVB64,
+				"hkdfSalt":           v.HkdfSaltB64,
+				"responderPublicKey": v.ResponderPublicKeyB64,
+			}
+			for k, w := range want {
+				if body[k] != w {
+					t.Errorf("%s round-trip mismatch:\n got %v\nwant %s", k, body[k], w)
+				}
+			}
+
+			// Burned.
+			resp, body = e.do(t, "GET", "/api/requests/"+id+"/response?proof="+v.ClaimProof, "", nil)
 			wantError(t, resp, body, 404)
 		})
 	}

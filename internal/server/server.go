@@ -19,8 +19,8 @@ type Server struct {
 	store    storage.Store
 	logger   *slog.Logger
 	now      func() time.Time
-	create   *ratelimit.Limiter // POST /api/secrets
-	retrieve *ratelimit.Limiter // GET/DELETE /api/secrets/* (retrieval class)
+	create   *ratelimit.Limiter // POST /api/secrets, POST /api/requests
+	retrieve *ratelimit.Limiter // GET/DELETE /api/secrets/*, /api/requests/{id}* (retrieval class)
 	metrics  *metrics
 }
 
@@ -47,6 +47,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/secrets/{id}", s.handleRetrieve)
 	mux.HandleFunc("DELETE /api/secrets/{id}", s.handleRevoke)
 	mux.HandleFunc("GET /api/secrets/{id}/meta", s.handleMeta)
+	// Request flow (SPEC v2.1 §9). §9.3: creation joins the create bucket,
+	// the other three endpoints join the retrieval-class bucket.
+	mux.HandleFunc("POST /api/requests", s.handleRequestCreate)
+	mux.HandleFunc("GET /api/requests/{id}", s.handleRequestStatus)
+	mux.HandleFunc("POST /api/requests/{id}/response", s.handleRequestFulfill)
+	mux.HandleFunc("GET /api/requests/{id}/response", s.handleRequestClaim)
 	mux.HandleFunc("GET /health", s.handleHealth)
 	if s.cfg.Metrics.Enabled {
 		mux.HandleFunc("GET /metrics", s.metrics.handler)
