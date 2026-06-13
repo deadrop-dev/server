@@ -2,16 +2,16 @@ package server
 
 import "encoding/base64"
 
-// Wire-format validation per SPEC v2.0. All sizes are spec-normative
-// constants, not configuration.
+// Wire-format validation per SPEC v2.0. Sizes are spec-normative constants —
+// except the secrets payload ceiling, which is operator configuration
+// (limits.max_encrypted_chars; SPEC §10.4 makes it a service decision).
 
 const (
-	idLen            = 32    // 24 random bytes, base64url
-	ivLen            = 16    // 12-byte IV, base64url
-	keyHashLen       = 22    // SHA-256 -> base64url -> 22 chars (128 bits)
-	legacyKeyHashLen = 8     // pre-2.0 truncated hash, accepted on compare only
-	maxEncryptedLen  = 10240 // base64url chars
-	maxHintLen       = 140   // characters (runes)
+	idLen            = 32  // 24 random bytes, base64url
+	ivLen            = 16  // 12-byte IV, base64url
+	keyHashLen       = 22  // SHA-256 -> base64url -> 22 chars (128 bits)
+	legacyKeyHashLen = 8   // pre-2.0 truncated hash, accepted on compare only
+	maxHintLen       = 140 // characters (runes)
 )
 
 // Request-flow constants (SPEC v2.1 §9.1/§9.2).
@@ -54,8 +54,8 @@ func validIV(iv string) bool {
 	return len(iv) == ivLen && isBase64URL(iv)
 }
 
-func validEncrypted(enc string) bool {
-	return len(enc) >= 1 && len(enc) <= maxEncryptedLen && isBase64URL(enc)
+func validEncrypted(enc string, maxChars int) bool {
+	return len(enc) >= 1 && len(enc) <= maxChars && isBase64URL(enc)
 }
 
 // validKeyHashCreate: creation requires the full 22-char hash.

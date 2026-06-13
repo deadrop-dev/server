@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -63,8 +64,9 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	case !validID(req.ID):
 		writeError(w, http.StatusBadRequest, "id must be 32 base64url characters")
 		return
-	case !validEncrypted(req.Encrypted):
-		writeError(w, http.StatusBadRequest, "encrypted must be 1-10240 base64url characters")
+	case !validEncrypted(req.Encrypted, s.cfg.Limits.MaxEncryptedChars):
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("encrypted must be 1-%d base64url characters", s.cfg.Limits.MaxEncryptedChars))
 		return
 	case !validIV(req.IV):
 		writeError(w, http.StatusBadRequest, "iv must be 16 base64url characters")

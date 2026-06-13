@@ -75,6 +75,11 @@ environment override.
 (default max 7 days) — never rejected for being out of range. For requests
 the range `[1, 10080]` and the 1440 default are SPEC §9.2 normative.
 
+The secrets payload ceiling is `max_encrypted_chars` (default 480,000
+base64url chars — sized so 256 KiB file-mode payloads fit, SPEC §10.4);
+oversized payloads get an honest 400. `max_body_bytes` (default 1 MB)
+caps the request body above it.
+
 Rate limits (SPEC §7): creation ≤ 10/min/IP (`POST /api/secrets` and
 `POST /api/requests`), retrieval-class (GET, meta, DELETE, and the other
 request endpoints) ≤ 60/min/IP. Both configurable; 429 responses carry

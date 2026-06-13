@@ -36,6 +36,7 @@ type LimitsConfig struct {
 	DefaultExpiresMinutes  int   `toml:"default_expires_minutes"` // applied when expiresMinutes absent
 	CreatePerMinute        int   `toml:"create_per_minute"`       // POST /api/secrets rate limit
 	RetrievePerMinute      int   `toml:"retrieve_per_minute"`     // GET/DELETE/meta rate limit
+	MaxEncryptedChars      int   `toml:"max_encrypted_chars"`     // secrets payload ceiling (base64url chars)
 	MaxBodyBytes           int64 `toml:"max_body_bytes"`
 	CleanupIntervalSeconds int   `toml:"cleanup_interval_seconds"`
 }
@@ -60,11 +61,15 @@ func Default() Config {
 		Server:  ServerConfig{Host: "0.0.0.0", Port: 8080},
 		Storage: StorageConfig{Driver: "sqlite", Path: "./deadrop.db"},
 		Limits: LimitsConfig{
-			MaxExpiresMinutes:      10080,
-			DefaultExpiresMinutes:  60,
-			CreatePerMinute:        10,
-			RetrievePerMinute:      60,
-			MaxBodyBytes:           32768,
+			MaxExpiresMinutes:     10080,
+			DefaultExpiresMinutes: 60,
+			CreatePerMinute:       10,
+			RetrievePerMinute:     60,
+			// Sized for file-mode payloads (SPEC §10.4): a 256 KiB file
+			// encrypts to ~467K base64url chars. Matches the reference SaaS,
+			// as does the 1 MB body ceiling.
+			MaxEncryptedChars:      480_000,
+			MaxBodyBytes:           1_048_576,
 			CleanupIntervalSeconds: 60,
 		},
 		CORS: CORSConfig{AllowedOrigins: []string{"*"}},
@@ -146,6 +151,7 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	setInt("DEADROP_DEFAULT_EXPIRES_MINUTES", &cfg.Limits.DefaultExpiresMinutes)
 	setInt("DEADROP_RATE_CREATE_PER_MINUTE", &cfg.Limits.CreatePerMinute)
 	setInt("DEADROP_RATE_RETRIEVE_PER_MINUTE", &cfg.Limits.RetrievePerMinute)
+	setInt("DEADROP_MAX_ENCRYPTED_CHARS", &cfg.Limits.MaxEncryptedChars)
 	setInt64("DEADROP_MAX_BODY_BYTES", &cfg.Limits.MaxBodyBytes)
 	setInt("DEADROP_CLEANUP_INTERVAL_SECONDS", &cfg.Limits.CleanupIntervalSeconds)
 	if v := getenv("DEADROP_CORS_ALLOWED_ORIGINS"); v != "" {
@@ -181,8 +187,18 @@ func validate(cfg *Config) error {
 	if cfg.Limits.CreatePerMinute < 1 || cfg.Limits.RetrievePerMinute < 1 {
 		return fmt.Errorf("limits: rate limits must be >= 1")
 	}
+	if cfg.Limits.MaxEncryptedChars < 1 {
+		return fmt.Errorf("limits.max_encrypted_chars: must be >= 1")
+	}
 	if cfg.Limits.MaxBodyBytes < 1024 {
 		return fmt.Errorf("limits.max_body_bytes: must be >= 1024")
+	}
+	// A body ceiling below the payload ceiling plus envelope overhead means
+	// every at-cap create 413s before validation can 400 it — a server that
+	// can never accept what it claims to. Fail loudly at startup instead.
+	if cfg.Limits.MaxBodyBytes < int64(cfg.Limits.MaxEncryptedChars)+1024 {
+		return fmt.Errorf("limits.max_body_bytes (%d) must exceed limits.max_encrypted_chars (%d) by at least 1024 bytes of JSON overhead",
+			cfg.Limits.MaxBodyBytes, cfg.Limits.MaxEncryptedChars)
 	}
 	if cfg.Limits.CleanupIntervalSeconds < 1 {
 		return fmt.Errorf("limits.cleanup_interval_seconds: must be >= 1")

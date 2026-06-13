@@ -15,7 +15,8 @@ max_expires_minutes = 10080     # DEADROP_MAX_EXPIRES_MINUTES (7 days; expiresMi
 default_expires_minutes = 60    # DEADROP_DEFAULT_EXPIRES_MINUTES (used when expiresMinutes is absent)
 create_per_minute = 10          # DEADROP_RATE_CREATE_PER_MINUTE (POST /api/secrets per client IP)
 retrieve_per_minute = 60        # DEADROP_RATE_RETRIEVE_PER_MINUTE (GET/DELETE/meta per client IP)
-max_body_bytes = 32768          # DEADROP_MAX_BODY_BYTES
+max_encrypted_chars = 480000    # DEADROP_MAX_ENCRYPTED_CHARS (secrets payload ceiling; default sized for 256 KiB file-mode payloads, SPEC §10.4)
+max_body_bytes = 1048576        # DEADROP_MAX_BODY_BYTES (request body ceiling; keep above max_encrypted_chars + JSON overhead)
 cleanup_interval_seconds = 60   # DEADROP_CLEANUP_INTERVAL_SECONDS (TTL sweep)
 
 [cors]

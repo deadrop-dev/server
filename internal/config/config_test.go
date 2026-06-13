@@ -37,8 +37,11 @@ func TestDefaults(t *testing.T) {
 	if cfg.Limits.RetrievePerMinute != 60 {
 		t.Errorf("RetrievePerMinute = %d, want 60", cfg.Limits.RetrievePerMinute)
 	}
-	if cfg.Limits.MaxBodyBytes != 32768 {
-		t.Errorf("MaxBodyBytes = %d, want 32768", cfg.Limits.MaxBodyBytes)
+	if cfg.Limits.MaxEncryptedChars != 480000 {
+		t.Errorf("MaxEncryptedChars = %d, want 480000", cfg.Limits.MaxEncryptedChars)
+	}
+	if cfg.Limits.MaxBodyBytes != 1048576 {
+		t.Errorf("MaxBodyBytes = %d, want 1048576", cfg.Limits.MaxBodyBytes)
 	}
 	if cfg.Limits.CleanupIntervalSeconds != 60 {
 		t.Errorf("CleanupIntervalSeconds = %d, want 60", cfg.Limits.CleanupIntervalSeconds)
@@ -73,6 +76,7 @@ max_expires_minutes = 1440
 default_expires_minutes = 30
 create_per_minute = 5
 retrieve_per_minute = 20
+max_encrypted_chars = 10240
 
 [cors]
 allowed_origins = ["https://example.com", "https://other.example"]
@@ -111,11 +115,24 @@ shared_secret_header = "X-My-Edge"
 	if cfg.Limits.CreatePerMinute != 5 || cfg.Limits.RetrievePerMinute != 20 {
 		t.Errorf("rates = %d/%d", cfg.Limits.CreatePerMinute, cfg.Limits.RetrievePerMinute)
 	}
+	if cfg.Limits.MaxEncryptedChars != 10240 {
+		t.Errorf("MaxEncryptedChars = %d, want 10240 (TOML)", cfg.Limits.MaxEncryptedChars)
+	}
 	if len(cfg.CORS.AllowedOrigins) != 2 || cfg.CORS.AllowedOrigins[0] != "https://example.com" {
 		t.Errorf("AllowedOrigins = %v", cfg.CORS.AllowedOrigins)
 	}
 	if !cfg.TrustedProxy.Enabled || cfg.TrustedProxy.SharedSecret != "edge-secret" || cfg.TrustedProxy.SharedSecretHeader != "X-My-Edge" {
 		t.Errorf("TrustedProxy = %+v", cfg.TrustedProxy)
+	}
+}
+
+func TestBodyCapBelowEncryptedCapRejected(t *testing.T) {
+	env := map[string]string{
+		"DEADROP_MAX_ENCRYPTED_CHARS": "480000",
+		"DEADROP_MAX_BODY_BYTES":      "32768",
+	}
+	if _, err := Load("", func(k string) string { return env[k] }); err == nil {
+		t.Fatal("want startup error when the body cap cannot fit the encrypted cap, got nil")
 	}
 }
 
@@ -134,7 +151,8 @@ func TestEnvOverridesTOML(t *testing.T) {
 		"DEADROP_DEFAULT_EXPIRES_MINUTES":     "15",
 		"DEADROP_RATE_CREATE_PER_MINUTE":      "3",
 		"DEADROP_RATE_RETRIEVE_PER_MINUTE":    "7",
-		"DEADROP_MAX_BODY_BYTES":              "16384",
+		"DEADROP_MAX_ENCRYPTED_CHARS":         "20480",
+		"DEADROP_MAX_BODY_BYTES":              "32768",
 		"DEADROP_CLEANUP_INTERVAL_SECONDS":    "10",
 		"DEADROP_CORS_ALLOWED_ORIGINS":        "https://a.example,https://b.example",
 		"DEADROP_TRUSTED_PROXY_ENABLED":       "true",
@@ -161,7 +179,10 @@ func TestEnvOverridesTOML(t *testing.T) {
 	if cfg.Limits.CreatePerMinute != 3 || cfg.Limits.RetrievePerMinute != 7 {
 		t.Errorf("rates = %d/%d", cfg.Limits.CreatePerMinute, cfg.Limits.RetrievePerMinute)
 	}
-	if cfg.Limits.MaxBodyBytes != 16384 || cfg.Limits.CleanupIntervalSeconds != 10 {
+	if cfg.Limits.MaxEncryptedChars != 20480 {
+		t.Errorf("MaxEncryptedChars = %d, want 20480 (env over TOML)", cfg.Limits.MaxEncryptedChars)
+	}
+	if cfg.Limits.MaxBodyBytes != 32768 || cfg.Limits.CleanupIntervalSeconds != 10 {
 		t.Errorf("Limits = %+v", cfg.Limits)
 	}
 	if len(cfg.CORS.AllowedOrigins) != 2 || cfg.CORS.AllowedOrigins[1] != "https://b.example" {

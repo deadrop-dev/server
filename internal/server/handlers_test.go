@@ -123,7 +123,7 @@ func TestCreateValidation(t *testing.T) {
 		{"id missing", createBody(map[string]any{"id": nil})},
 		{"encrypted empty", createBody(map[string]any{"encrypted": ""})},
 		{"encrypted missing", createBody(map[string]any{"encrypted": nil})},
-		{"encrypted too long", createBody(map[string]any{"encrypted": strings.Repeat("A", 10241)})},
+		{"encrypted too long", createBody(map[string]any{"encrypted": strings.Repeat("A", 480001)})},
 		{"encrypted bad chars", createBody(map[string]any{"encrypted": "abc+def="})},
 		{"iv 15 chars", createBody(map[string]any{"iv": strings.Repeat("A", 15)})},
 		{"iv 17 chars", createBody(map[string]any{"iv": strings.Repeat("A", 17)})},
@@ -145,8 +145,29 @@ func TestCreateValidation(t *testing.T) {
 
 	t.Run("max valid encrypted accepted", func(t *testing.T) {
 		e := newTestEnv(t, nil)
-		resp, _ := e.post(t, createBody(map[string]any{"encrypted": strings.Repeat("A", 10240)}))
+		resp, _ := e.post(t, createBody(map[string]any{"encrypted": strings.Repeat("A", 480000)}))
 		wantStatus(t, resp, 201)
+	})
+	t.Run("file-mode-size payload round-trips on defaults", func(t *testing.T) {
+		// A 256 KiB file encrypts to ~467K chars — must fit the default cap
+		// AND the default body ceiling (this request body is ~467KB).
+		e := newTestEnv(t, nil)
+		enc := strings.Repeat("A", 467000)
+		resp, _ := e.post(t, createBody(map[string]any{"encrypted": enc}))
+		wantStatus(t, resp, 201)
+		resp, body := e.do(t, "GET", "/api/secrets/"+testID+"?k="+testKeyHash, "", nil)
+		wantStatus(t, resp, 200)
+		if body["encrypted"] != enc {
+			t.Error("file-mode-size payload did not round-trip intact")
+		}
+	})
+	t.Run("operator can tighten the cap", func(t *testing.T) {
+		e := newTestEnv(t, func(c *config.Config) { c.Limits.MaxEncryptedChars = 10240 })
+		resp, body := e.post(t, createBody(map[string]any{"encrypted": strings.Repeat("A", 10241)}))
+		wantError(t, resp, body, 400)
+		if msg, _ := body["error"].(string); !strings.Contains(msg, "1-10240") {
+			t.Errorf("error = %q, want the configured cap in the message", msg)
+		}
 	})
 	t.Run("hint exactly 140 accepted", func(t *testing.T) {
 		e := newTestEnv(t, nil)
